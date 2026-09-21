@@ -23,7 +23,7 @@ jobs:
 
       - name: Build EXE
         run: |
-          pyinstaller --onefile --windowed --name polefind --collect-binaries selenium --collect-data selenium main.py
+          pyinstaller --onefile --windowed --name polefind --collect-all selenium --hidden-import=selenium.webdriver.chrome.webdriver --hidden-import=selenium.webdriver.chrome.service --hidden-import=selenium.webdriver.common.driver_finder main.py
 
       - name: Upload EXE
         uses: actions/upload-artifact@v4
