@@ -17,6 +17,25 @@ from selenium.webdriver.support import expected_conditions as EC
 URL = "https://elecmap.kr/search/single"
 PATTERN = re.compile(r"^\d{4}[A-Za-z]\d{3}$")
 
+# 도로명주소: 서울특별시 강남구 테헤란로 123
+#                 경기도 고양시 일산동구 중앙로 123-4
+ROAD_ADDR_RE = re.compile(
+    r"(?:[가-힣]+(?:특별시|광역시|특별자치시|도|특별자치도)\s+)?"
+    r"[가-힣0-9·]+(?:시|군|구)"
+    r"(?:\s+[가-힣0-9·]+(?:시|군|구|읍|면|동))?"
+    r"\s+[가-힣0-9·]+(?:대로|로|길)\s+"
+    r"\d+(?:-\d+)?(?:\s*\([^\n)]*\))?"
+)
+
+# 지번주소 보조: 서울특별시 강남구 역삼동 123-4
+LOT_ADDR_RE = re.compile(
+    r"(?:[가-힣]+(?:특별시|광역시|특별자치시|도|특별자치도)\s+)?"
+    r"[가-힣0-9·]+(?:시|군|구)"
+    r"(?:\s+[가-힣0-9·]+(?:시|군|구))?"
+    r"\s+[가-힣0-9·]+(?:읍|면|동|리)\s+"
+    r"\d+(?:-\d+)?"
+)
+
 
 def make_driver():
     # PyInstaller EXE 안에 포함된 Selenium Manager를 우선 사용
@@ -43,6 +62,53 @@ def make_driver():
     return webdriver.Chrome(options=o)
 
 
+def extract_address(body, code):
+    # 1) 라벨 바로 뒤에 주소가 있는 경우
+    labels = ("도로명주소", "도로명 주소", "지번주소", "지번 주소", "주소", "소재지")
+    for label in labels:
+        m = re.search(
+            re.escape(label) + r"\s*[:：]?\s*([^\n]+)",
+            body,
+            flags=re.IGNORECASE,
+        )
+        if m:
+            value = m.group(1).strip()
+            if value and value != code and len(value) > 4:
+                road = ROAD_ADDR_RE.search(value)
+                if road:
+                    return road.group(0).strip()
+                lot = LOT_ADDR_RE.search(value)
+                if lot:
+                    return lot.group(0).strip()
+
+        # 라벨 다음 줄에 주소가 있는 경우
+        m = re.search(
+            re.escape(label) + r"\s*[:：]?\s*\n\s*([^\n]+)",
+            body,
+            flags=re.IGNORECASE,
+        )
+        if m:
+            value = m.group(1).strip()
+            road = ROAD_ADDR_RE.search(value)
+            if road:
+                return road.group(0).strip()
+            lot = LOT_ADDR_RE.search(value)
+            if lot:
+                return lot.group(0).strip()
+
+    # 2) 페이지 전체에서 도로명주소를 직접 찾기
+    m = ROAD_ADDR_RE.search(body)
+    if m:
+        return m.group(0).strip()
+
+    # 3) 도로명주소가 없을 때 지번주소를 보조로 찾기
+    m = LOT_ADDR_RE.search(body)
+    if m:
+        return m.group(0).strip()
+
+    return ""
+
+
 def search_one(driver, code):
     driver.get(URL)
 
@@ -54,8 +120,10 @@ def search_one(driver, code):
     inp.clear()
     inp.send_keys(code)
 
+    # 검색 버튼을 정확히 찾아 클릭
     buttons = driver.find_elements(
-        By.XPATH, "//button[contains(normalize-space(.),'검색')]"
+        By.XPATH,
+        "//button[normalize-space(.)='검색' or contains(normalize-space(.),'검색')]"
     )
     clicked = False
     for b in buttons:
@@ -70,29 +138,13 @@ def search_one(driver, code):
     if not clicked:
         inp.send_keys("\n")
 
-    end = time.time() + 12
+    # 결과가 늦게 렌더링될 수 있으므로 최대 15초 대기
+    end = time.time() + 15
     while time.time() < end:
         body = driver.find_element(By.TAG_NAME, "body").text
-
-        for label in ("도로명주소", "도로명 주소", "주소", "소재지"):
-            m = re.search(
-                re.escape(label) + r"\s*[:：]?\s*([^\n]+)",
-                body
-            )
-            if m:
-                value = m.group(1).strip()
-                if value and value != code and len(value) > 4:
-                    return value
-
-        m = re.search(
-            r"[가-힣0-9·]+(?:시|군|구)\s+"
-            r"[가-힣0-9·]+(?:대로|로|길)\s+"
-            r"\d+(?:[-~]\d+)?(?:\s*\([^)]*\))?",
-            body
-        )
-        if m:
-            return m.group(0).strip()
-
+        result = extract_address(body, code)
+        if result:
+            return result
         time.sleep(0.4)
 
     return ""
