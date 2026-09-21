@@ -30,4 +30,6 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: polefind-windows
-          path: |\n            dist/polefind.exe\n            dist/polefind-diagnose.exe
+          path: |
+            dist/polefind.exe
+            dist/polefind-diagnose.exe
