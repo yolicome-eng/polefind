@@ -21,12 +21,13 @@ jobs:
           pip install -r requirements.txt
           pip install pyinstaller
 
-      - name: Build EXE
+      - name: Build main EXE
         run: |
           pyinstaller --onefile --windowed --name polefind --collect-all selenium --hidden-import=selenium.webdriver.chrome.webdriver --hidden-import=selenium.webdriver.chrome.service --hidden-import=selenium.webdriver.common.driver_finder main.py
+          pyinstaller --onefile --windowed --name polefind-diagnose --collect-all selenium --hidden-import=selenium.webdriver.chrome.webdriver --hidden-import=selenium.webdriver.chrome.service --hidden-import=selenium.webdriver.common.driver_finder diagnose.py
 
       - name: Upload EXE
         uses: actions/upload-artifact@v4
         with:
           name: polefind-windows
-          path: dist/polefind.exe
+          path: |\n            dist/polefind.exe\n            dist/polefind-diagnose.exe
