@@ -1,191 +1,129 @@
 import os
 import re
-import sys
-import time
+import json
 import threading
 import traceback
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
 import pandas as pd
-from selenium import webdriver
-from selenium.webdriver.common.by import By
-from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
+import requests
 
-URL = "https://elecmap.kr/search/single"
-PATTERN = re.compile(r"^\d{4}[A-Za-z]\d{3}$")
+API_URL = "https://elecmap.kr/api/search"
+CODE_RE = re.compile(r"^\d{4}[A-Za-z]\d{3}$")
 
-# 도로명주소: 서울특별시 강남구 테헤란로 123
-#                 경기도 고양시 일산동구 중앙로 123-4
-ROAD_ADDR_RE = re.compile(
-    r"(?:[가-힣]+(?:특별시|광역시|특별자치시|도|특별자치도)\s+)?"
-    r"[가-힣0-9·]+(?:시|군|구)"
-    r"(?:\s+[가-힣0-9·]+(?:시|군|구|읍|면|동))?"
-    r"\s+[가-힣0-9·]+(?:대로|로|길)\s+"
-    r"\d+(?:-\d+)?(?:\s*\([^\n)]*\))?"
-)
+SESSION = requests.Session()
+SESSION.headers.update({
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/153 Safari/537.36",
+    "Accept": "application/json, text/plain, */*",
+    "Content-Type": "application/json",
+    "Origin": "https://elecmap.kr",
+    "Referer": "https://elecmap.kr/search/single",
+})
 
-# 지번주소 보조: 서울특별시 강남구 역삼동 123-4
-LOT_ADDR_RE = re.compile(
-    r"(?:[가-힣]+(?:특별시|광역시|특별자치시|도|특별자치도)\s+)?"
-    r"[가-힣0-9·]+(?:시|군|구)"
-    r"(?:\s+[가-힣0-9·]+(?:시|군|구))?"
-    r"\s+[가-힣0-9·]+(?:읍|면|동|리)\s+"
-    r"\d+(?:-\d+)?"
-)
+REGIONS = [f"region{i}" for i in range(1, 11)]
 
 
-def make_driver():
-    # PyInstaller EXE 안에 포함된 Selenium Manager를 우선 사용
-    if getattr(sys, "frozen", False):
-        base = getattr(sys, "_MEIPASS", os.path.dirname(sys.executable))
-        candidates = [
-            os.path.join(base, "selenium", "webdriver", "common", "windows", "selenium-manager.exe"),
-            os.path.join(base, "selenium-manager.exe"),
-        ]
-        for p in candidates:
-            if os.path.isfile(p):
-                os.environ["SE_MANAGER_PATH"] = p
-                break
-
-    o = Options()
-    o.add_argument("--headless=new")
-    o.add_argument("--disable-gpu")
-    o.add_argument("--no-sandbox")
-    o.add_argument("--disable-dev-shm-usage")
-    o.add_argument("--window-size=1600,1200")
-    o.add_argument("--lang=ko-KR")
-    o.add_argument("--disable-notifications")
-    o.add_argument("--disable-popup-blocking")
-    return webdriver.Chrome(options=o)
+def flatten_values(obj, out=None):
+    if out is None:
+        out = []
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            if isinstance(v, (dict, list)):
+                flatten_values(v, out)
+            elif v is not None:
+                out.append((str(k).lower(), str(v).strip()))
+    elif isinstance(obj, list):
+        for v in obj:
+            flatten_values(v, out)
+    return out
 
 
-def extract_address(driver, body, code):
-    # ElecMap 결과는 일반 텍스트/숨겨진 카드/버튼 속성 중 한 곳에 표시될 수 있습니다.
-    chunks = [body]
-    try:
-        chunks.append(driver.find_element(By.TAG_NAME, "html").get_attribute("innerHTML") or "")
-    except Exception:
-        pass
-
-    text = "\n".join(chunks)
-
-    # 라벨 기반 우선 추출
-    labels = ("도로명주소", "도로명 주소", "지번주소", "지번 주소", "주소", "소재지")
-    for label in labels:
-        for m in re.finditer(re.escape(label) + r"\s*[:：]?\s*([^\n<]{5,200})", text, re.IGNORECASE):
-            value = re.sub(r"\s+", " ", m.group(1)).strip()
-            value = re.sub(r"<[^>]+>", " ", value).strip()
-            if value and value != code and len(value) > 4:
-                road = ROAD_ADDR_RE.search(value)
-                if road:
-                    return road.group(0).strip()
-                lot = LOT_ADDR_RE.search(value)
-                if lot:
-                    return lot.group(0).strip()
-
-    # 페이지 전체에서 주소 패턴 검색
-    for rx in (ROAD_ADDR_RE, LOT_ADDR_RE):
-        m = rx.search(text)
-        if m:
-            return m.group(0).strip()
-
-    # 지도/검색 결과 요소의 title, aria-label, data-* 속성도 확인
-    try:
-        for el in driver.find_elements(By.XPATH, "//*[@title or @aria-label or @data-address or @data-name]"):
-            attrs = [
-                el.get_attribute("title"),
-                el.get_attribute("aria-label"),
-                el.get_attribute("data-address"),
-                el.get_attribute("data-name"),
-            ]
-            for value in attrs:
-                if not value:
-                    continue
-                for rx in (ROAD_ADDR_RE, LOT_ADDR_RE):
-                    m = rx.search(value)
-                    if m:
-                        return m.group(0).strip()
-    except Exception:
-        pass
-
-    return ""
-
-
-def click_visible_button(driver, labels):
-    for label in labels:
-        xpath = f"//button[normalize-space(.)='{label}' or contains(normalize-space(.),'{label}')]"
-        for b in driver.find_elements(By.XPATH, xpath):
-            try:
-                if b.is_displayed() and b.is_enabled():
-                    driver.execute_script("arguments[0].scrollIntoView({block:'center'});", b)
-                    driver.execute_script("arguments[0].click();", b)
-                    return True
-            except Exception:
-                continue
-    return False
-
-
-def search_one(driver, code):
-    driver.get(URL)
-
-    inp = WebDriverWait(driver, 20).until(
-        EC.element_to_be_clickable(
-            (By.CSS_SELECTOR, "input[placeholder*='전산화번호']")
-        )
+def find_address(data):
+    pairs = flatten_values(data)
+    preferred = (
+        "roadaddress", "road_address", "roadaddr", "road_addr",
+        "jibunaddress", "jibun_address", "address", "addr",
+        "location", "fulladdress", "full_address"
     )
-    inp.clear()
-    inp.send_keys(code)
 
-    # 입력창과 같은 form의 검색 버튼을 우선 사용합니다.
-    clicked = False
-    try:
-        form = inp.find_element(By.XPATH, "ancestor::form[1]")
-        for b in form.find_elements(By.XPATH, ".//button"):
-            try:
-                if b.is_displayed() and b.is_enabled():
-                    driver.execute_script("arguments[0].click();", b)
-                    clicked = True
-                    break
-            except Exception:
-                pass
-    except Exception:
-        pass
+    # 주소로 보이는 키를 먼저 사용
+    for key, value in pairs:
+        key2 = key.replace("-", "_").replace(" ", "")
+        if any(p.replace("_", "") in key2 for p in preferred):
+            if len(value) >= 5 and not re.fullmatch(r"https?://.*", value):
+                return value
 
-    if not clicked:
-        clicked = click_visible_button(driver, ("검색",))
-
-    if not clicked:
-        inp.send_keys("\n")
-
-    # ElecMap은 검색 후 별도의 '검색 시작' 버튼을 띄우는 경우가 있습니다.
-    # 이 버튼을 누르지 않으면 실제 데이터 검색이 시작되지 않습니다.
-    end = time.time() + 25
-    while time.time() < end:
-        click_visible_button(driver, ("검색 시작",))
-
-        body = driver.find_element(By.TAG_NAME, "body").text
-        result = extract_address(driver, body, code)
-        if result:
-            return result
-
-        # 결과가 지도에만 표시되는 경우 '지도에서 보기'를 눌러 주소 카드/팝업을 엽니다.
-        if "검색결과" in body or "검색 완료" in body or "지도에서 보기" in body:
-            click_visible_button(driver, ("지도에서 보기",))
-            time.sleep(0.5)
-            body = driver.find_element(By.TAG_NAME, "body").text
-            result = extract_address(driver, body, code)
-            if result:
-                return result
-
-        time.sleep(0.5)
+    # 값 자체가 한국 주소처럼 보이는 경우
+    for _, value in pairs:
+        if re.search(r"(특별시|광역시|특별자치도|도)\s+.*(시|군|구)\s+.*(대로|로|길)\s*\d+", value):
+            return value
+        if re.search(r"(시|군|구)\s+.*(읍|면|동|리)\s+\d+", value):
+            return value
 
     return ""
+
+
+def find_coordinates(data):
+    lat = lon = None
+    pairs = flatten_values(data)
+    for key, value in pairs:
+        k = key.replace("_", "").replace("-", "")
+        try:
+            n = float(value)
+        except Exception:
+            continue
+        if k in ("lat", "latitude") and -90 <= n <= 90:
+            lat = n
+        elif k in ("lon", "lng", "longitude") and -180 <= n <= 180:
+            lon = n
+    return lat, lon
+
+
+def api_search(code):
+    # ElecMap 공식 페이지는 권역을 모르면 전국 권역을 자동 검색합니다.
+    # 우선 region 없이 요청하고, 실패하면 알려진 10개 권역을 순차적으로 확인합니다.
+    payloads = [{"code": code}]
+    payloads.extend({"code": code, "region": r} for r in REGIONS)
+
+    last_error = None
+
+    for payload in payloads:
+        try:
+            r = SESSION.post(API_URL, json=payload, timeout=15)
+            r.raise_for_status()
+            data = r.json()
+
+            address = find_address(data)
+            lat, lon = find_coordinates(data)
+
+            # API가 주소를 직접 주는 경우
+            if address:
+                return address
+
+            # 주소가 없더라도 좌표가 있으면 문자열로 보존해 실패로 버리지 않음
+            if lat is not None and lon is not None:
+                return f"좌표 {lat:.6f}, {lon:.6f}"
+
+            # 성공/결과 구조인데 주소명이 다른 경우 원문에서 흔한 필드를 추가 탐색
+            if isinstance(data, dict):
+                for key in ("result", "data", "item", "pole"):
+                    value = data.get(key)
+                    if isinstance(value, dict):
+                        address = find_address(value)
+                        if address:
+                            return address
+
+        except Exception as e:
+            last_error = e
+            continue
+
+    if last_error:
+        return ""
+    return ""
+
 
 def run(path, status, bar, root):
-    driver = None
     try:
         df = pd.read_excel(path, header=None)
         if df.shape[1] < 2:
@@ -195,20 +133,15 @@ def run(path, status, bar, root):
         if total == 0:
             raise ValueError("엑셀 파일에 데이터가 없습니다.")
 
-        status.set("Chrome 준비 중...")
-        root.after(0, root.update_idletasks)
-
-        driver = make_driver()
-
         for i, v in enumerate(df.iloc[:, 0].fillna("").astype(str)):
             code = v.strip().replace(" ", "").upper()
             status.set(f"{i + 1}/{total}  {code}")
 
-            if not PATTERN.fullmatch(code):
+            if not CODE_RE.fullmatch(code):
                 df.iat[i, 1] = "형식오류"
             else:
                 try:
-                    result = search_one(driver, code)
+                    result = api_search(code)
                     df.iat[i, 1] = result or "검색결과없음"
                 except Exception as e:
                     df.iat[i, 1] = "검색오류: " + type(e).__name__
@@ -218,12 +151,6 @@ def run(path, status, bar, root):
 
         out = os.path.splitext(path)[0] + "_주소결과.xlsx"
         df.to_excel(out, index=False, header=False)
-
-        if driver:
-            try:
-                driver.quit()
-            except Exception:
-                pass
 
         status.set("완료")
         root.after(
@@ -235,15 +162,8 @@ def run(path, status, bar, root):
         )
 
     except Exception as e:
-        if driver:
-            try:
-                driver.quit()
-            except Exception:
-                pass
-
         detail = f"{type(e).__name__}: {e}"
         print(traceback.format_exc())
-
         status.set("오류 발생")
         root.after(
             0,
@@ -264,21 +184,17 @@ def main():
     status = tk.StringVar(value="엑셀 파일을 선택하세요.")
 
     ttk.Label(
-        root,
-        text="전산화번호 주소 찾기",
+        root, text="전산화번호 주소 찾기",
         font=("맑은 고딕", 18, "bold")
     ).pack(pady=(18, 10))
 
     row = ttk.Frame(root)
     row.pack(fill="x", padx=25)
 
-    ttk.Entry(row, textvariable=path).pack(
-        side="left", fill="x", expand=True
-    )
+    ttk.Entry(row, textvariable=path).pack(side="left", fill="x", expand=True)
 
     ttk.Button(
-        row,
-        text="엑셀 선택",
+        row, text="엑셀 선택",
         command=lambda: path.set(
             filedialog.askopenfilename(
                 filetypes=[("Excel 파일", "*.xlsx")]
@@ -286,41 +202,28 @@ def main():
         ),
     ).pack(side="left", padx=(8, 0))
 
-    bar = ttk.Progressbar(
-        root,
-        length=630,
-        mode="determinate"
-    )
+    bar = ttk.Progressbar(root, length=630, mode="determinate")
     bar.pack(pady=20)
 
     ttk.Label(
-        root,
-        textvariable=status,
+        root, textvariable=status,
         font=("맑은 고딕", 10)
     ).pack()
 
     def start():
         if not path.get() or not os.path.isfile(path.get()):
-            messagebox.showwarning(
-                "확인",
-                "엑셀 파일을 먼저 선택하세요."
-            )
+            messagebox.showwarning("확인", "엑셀 파일을 먼저 선택하세요.")
             return
 
         bar["value"] = 0
-        status.set("준비 중...")
+        status.set("검색 준비 중...")
         threading.Thread(
             target=run,
             args=(path.get(), status, bar, root),
             daemon=True,
         ).start()
 
-    ttk.Button(
-        root,
-        text="검색 시작",
-        command=start
-    ).pack(pady=15)
-
+    ttk.Button(root, text="검색 시작", command=start).pack(pady=15)
     root.mainloop()
 
 
