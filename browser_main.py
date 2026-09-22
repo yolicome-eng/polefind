@@ -70,24 +70,33 @@ def body(driver):
         return ""
 
 def extract_address(text):
-    lines = [x.strip() for x in text.splitlines() if x.strip()]
-    bad = ("전산화번호", "검색 준비", "검색 중", "검색 시작", "지도에서 보기", "검색결과")
+    # Only accept a real Korean road-name or lot-number address.
+    # Region labels such as "강원 동부" must never be written as an address.
+    lines = [re.sub(r"\\s+", " ", x).strip() for x in text.splitlines() if x.strip()]
+    region_only = re.compile(r"^(서울|경기|인천|강원|충북|충남|전북|전남|경북|경남)(?:\\s+(?:동부|서부|남부|북부|권))?$")
+    bad = ("전산화번호", "검색 준비", "검색 중", "검색 시작", "지도에서 보기", "검색결과", "강원 동부")
+
+    def valid(x):
+        x = x.strip()
+        if not x or len(x) < 8 or len(x) > 160:
+            return False
+        if region_only.fullmatch(x) or any(x == b for b in bad):
+            return False
+        road = re.search(r"(?:대로|로|길)\\s*\\d+(?:-\\d+)?", x)
+        lot = re.search(r"(?:읍|면|동|리)\\s*\\d+(?:-\\d+)?", x)
+        prefix = re.search(r"(?:특별시|광역시|특별자치시|특별자치도|도|시|군|구)", x)
+        return bool((road or lot) and prefix)
+
+    labels = ("주소", "도로명주소", "지번주소", "소재지", "도로명 주소", "지번 주소")
     for i, x in enumerate(lines):
-        if x in ("주소", "도로명주소", "지번주소", "소재지", "도로명 주소", "지번 주소"):
-            if i + 1 < len(lines) and lines[i + 1] not in bad:
-                return lines[i + 1]
-    patterns = [
-        r"(서울특별시|부산광역시|대구광역시|인천광역시|광주광역시|대전광역시|울산광역시|세종특별자치시|경기도|강원(?:특별자치)?도|충청북도|충청남도|전라북도|전라남도|경상북도|경상남도)[^\n]{2,120}",
-        r"(서울|부산|대구|인천|광주|대전|울산|세종|경기|강원|충북|충남|전북|전남|경북|경남)[^\n]{2,120}"
-    ]
+        if x in labels:
+            for nxt in lines[i + 1:i + 4]:
+                if valid(nxt):
+                    return nxt
+
     for x in lines:
-        if any(k in x for k in bad):
-            continue
-        if re.search(r"(대로|로|길)\s*\d+", x) and len(x) >= 8:
+        if valid(x):
             return x
-        for p in patterns:
-            if re.search(p, x) and re.search(r"(읍|면|동|리|대로|로|길)", x):
-                return x
     return ""
 
 def choose_region(driver, region):
