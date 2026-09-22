@@ -21,9 +21,9 @@ jobs:
           pip install pandas openpyxl selenium pyinstaller
       - name: Build
         run: |
-          pyinstaller --onefile --windowed --name polefind-browser --collect-all selenium --hidden-import=selenium.webdriver.chrome.webdriver --hidden-import=selenium.webdriver.chrome.service --hidden-import=selenium.webdriver.common.driver_finder browser_main.py
+          pyinstaller --onefile --windowed --name polefind --collect-all selenium --hidden-import=selenium.webdriver.chrome.webdriver --hidden-import=selenium.webdriver.chrome.service --hidden-import=selenium.webdriver.common.driver_finder browser_main.py
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: polefind-browser
-          path: dist/polefind-browser.exe
+          name: polefind-windows-final
+          path: dist/polefind.exe
