@@ -1,4 +1,4 @@
-name: Build Browser Candidate
+name: Build Browser Candidate # rebuild
 
 on:
   workflow_dispatch:
