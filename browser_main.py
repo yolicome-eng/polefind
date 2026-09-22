@@ -117,161 +117,50 @@ def choose_region(d, region):
     return False
 
 def dismiss_prompt(d):
+    # Handle both browser-native alerts and ElecMap's HTML dialogs.
+    closed=False
     try:
         a=d.switch_to.alert
-        t=a.text
         a.accept()
-        return t
-    except: return ""
-
-def click_map_marker(d):
-    # Leaflet/Kakao/custom map markers: try the marker-like elements only.
-    selectors=[
-        ".leaflet-marker-icon",
-        "[class*='marker']",
-        "[class*='Marker']",
-        "[aria-label*='마커']",
-        "[aria-label*='marker']",
-        "[title*='전주']",
-        "[title*='주소']"
-    ]
-    for sel in selectors:
-        try:
-            for e in d.find_elements(By.CSS_SELECTOR,sel):
-                if visible(e):
-                    d.execute_script("arguments[0].scrollIntoView({block:'center'});",e)
-                    d.execute_script("arguments[0].click();",e)
-                    time.sleep(1.0)
-                    return True
-        except: pass
-    return False
-
-def inspect_result(d, code):
-    # First read the result already displayed on the page.
-    a=extract_under_code(d,code)
-    if a: return a
-
-    # Then click the site's map-view button and inspect the resulting view.
-    try:
-        for b in d.find_elements(By.XPATH,
-            "//*[self::button or self::a or @role='button']"):
-            if visible(b) and "지도에서 보기" in txt(b):
-                before=set(d.window_handles)
-                d.execute_script("arguments[0].click();",b)
-                time.sleep(1.2)
-                after=set(d.window_handles)
-                for h in after-before:
-                    try: d.switch_to.window(h); break
-                    except: pass
-                a=extract_under_code(d,code)
-                if a: return a
-                click_map_marker(d)
-                a=extract_under_code(d,code)
-                if a: return a
-                # Return to all windows without closing anything.
-                for h in list(d.window_handles):
-                    try:
-                        d.switch_to.window(h)
-                        a=extract_under_code(d,code)
-                        if a: return a
-                    except: pass
-                return ""
+        closed=True
     except: pass
-    return ""
 
-def search_one(d, code, region):
-    d.get(URL)
-    WebDriverWait(d,30).until(EC.presence_of_element_located((By.TAG_NAME,"body")))
-    time.sleep(1)
-    choose_region(d,region)
-
-    target=WebDriverWait(d,20).until(
-        lambda x: next((e for e in x.find_elements(By.CSS_SELECTOR,"input")
-                        if visible(e) and "전산화번호" in
-                        (e.get_attribute("placeholder") or "")),None))
-    target.click()
-    target.clear()
-    target.send_keys(code)
-
-    clicked=False
-    for b in d.find_elements(By.XPATH,"//button[contains(normalize-space(.),'검색')]"):
-        try:
-            if visible(b) and b.is_enabled():
-                d.execute_script("arguments[0].click();",b)
-                clicked=True
-                break
-        except: pass
-    if not clicked:
-        target.send_keys(Keys.ENTER)
-
-    # Site explicitly waits before starting the search.
-    deadline=time.time()+75
-    while time.time()<deadline:
-        dismiss_prompt(d)
-        a=inspect_result(d,code)
-        if a: return a
-        time.sleep(.8)
-    return ""
-
-def run(path,region,status,bar,root):
-    d=None
     try:
-        df=pd.read_excel(path,header=None)
-        if df.shape[1]<2: df[1]=""
-        start=1 if len(df) and str(df.iat[0,0]).strip() in ("전산화번호","번호","코드") else 0
-        d=make_driver()
-        total=len(df)-start
-        for n,i in enumerate(range(start,len(df)),1):
-            code=str(df.iat[i,0]).strip().replace(" ","").upper()
-            status.set(f"{n}/{total}  {code}  [{region}]")
-            if not CODE_RE.fullmatch(code):
-                df.iat[i,1]="형식오류(8자리 확인)"
-            else:
+        d.switch_to.default_content()
+        # "위치를 선택해주세요" -> 확인 closes the warning and exposes
+        # the location selector.  A search-fallback notice -> 취소 closes
+        # the notice so the current result can be inspected.
+        body=txt(d.find_element(By.TAG_NAME,"body"))
+        wanted=[]
+        if "위치를 선택해주세요" in body:
+            wanted=["확인"]
+        elif "선택한 권역에서 찾을 수 없어 다른 권역에서 검색했습니다" in body:
+            wanted=["취소","확인"]
+        else:
+            wanted=["확인"]
+
+        for label in wanted:
+            for e in d.find_elements(By.XPATH,
+                "//*[self::button or self::a or @role='button']"):
                 try:
-                    a=search_one(d,code,region)
-                    df.iat[i,1]=a or "검색실패"
-                except Exception as e:
-                    df.iat[i,1]="검색오류: "+type(e).__name__
-            out=os.path.splitext(path)[0]+"_주소결과.xlsx"
-            # Save frequently so progress is not lost.
-            if n%2==0: df.to_excel(out,index=False,header=False)
-            bar["value"]=n*100/max(total,1)
-            root.update_idletasks()
-        out=os.path.splitext(path)[0]+"_주소결과.xlsx"
-        df.to_excel(out,index=False,header=False)
-        status.set("완료")
-        root.after(0,lambda:messagebox.showinfo("완료",f"결과 파일:\n{out}"))
-    except Exception as e:
-        status.set("오류 발생")
-        root.after(0,lambda m=str(e):messagebox.showerror("오류",m))
-        print(traceback.format_exc())
-    finally:
-        if d:
-            try:d.quit()
-            except:pass
+                    if visible(e) and txt(e).strip()==label:
+                        d.execute_script("arguments[0].click();",e)
+                        time.sleep(.5)
+                        closed=True
+                        break
+                except: pass
+            if closed: break
+    except: pass
+    return closed
 
-def main():
-    r=tk.Tk()
-    r.title("전산화번호 → 주소 찾기")
-    r.geometry("700x380")
-    r.resizable(False,False)
-    p=tk.StringVar()
-    region=tk.StringVar(value="경기")
-    s=tk.StringVar(value="엑셀 파일과 검색 권역을 선택하세요.")
-    ttk.Label(r,text="전산화번호 주소 찾기",font=("맑은 고딕",18,"bold")).pack(pady=(18,8))
-    ttk.Label(r,text="① 검색 권역을 먼저 선택하세요").pack()
-    ttk.Combobox(r,textvariable=region,values=REGIONS,state="readonly",width=18).pack(pady=7)
-    row=ttk.Frame(r); row.pack(fill="x",padx=25,pady=8)
-    ttk.Entry(row,textvariable=p).pack(side="left",fill="x",expand=True)
-    ttk.Button(row,text="엑셀 선택",
-        command=lambda:p.set(filedialog.askopenfilename(filetypes=[("Excel 파일","*.xlsx")]))).pack(side="left",padx=8)
-    bar=ttk.Progressbar(r,length=630,mode="determinate"); bar.pack(pady=18)
-    ttk.Label(r,textvariable=s).pack()
-    def start():
-        if not os.path.isfile(p.get()):
-            messagebox.showwarning("확인","엑셀 파일을 먼저 선택하세요."); return
-        threading.Thread(target=run,args=(p.get(),region.get(),s,bar,r),daemon=True).start()
-    ttk.Button(r,text="검색 시작",command=start).pack(pady=15)
-    r.mainloop()
+def close_all_site_dialogs(d, max_rounds=6):
+    # Some dialogs appear one after another. Keep clearing them before
+    # trying to read/click the result.
+    for _ in range(max_rounds):
+        before=txt(d.find_element(By.TAG_NAME,"body")) if d.current_window_handle else ""
+        changed=dismiss_prompt(d)
+        if not changed:
+            break
+        time.sleep(.35)
+    return True
 
-if __name__=="__main__": main()
