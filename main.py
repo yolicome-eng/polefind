@@ -287,7 +287,19 @@ def job(path,r,status):
         col=out.shape[1]-1
         codes=[norm(x) for x in df.iloc[:,0] if re.fullmatch(r"[A-Za-z0-9]{8}",norm(x))]
         if not codes:raise ValueError("첫 번째 열에 8자리 전산화번호가 없습니다.")
-        d=webdriver.Chrome(options=(lambda o:o)(Options()))
+        opts=Options()
+        opts.add_experimental_option("prefs",{
+            "profile.default_content_setting_values.geolocation":1,
+            "profile.default_content_setting_values.notifications":1
+        })
+        d=webdriver.Chrome(options=opts)
+        try:
+            d.execute_cdp_cmd("Browser.grantPermissions",{
+                "origin":"https://elecmap.kr",
+                "permissions":["geolocation"]
+            })
+        except Exception:
+            pass
         d.maximize_window()
         total=len(codes)
         for i,c in enumerate(codes,1):
