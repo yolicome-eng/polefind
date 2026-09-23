@@ -1,0 +1,23 @@
+name: Build independent address finder
+on:
+  push:
+    paths:
+      - independent_app.py
+      - independent_core.py
+      - requirements-independent.txt
+      - .github/workflows/build-independent.yml
+  workflow_dispatch:
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install -r requirements-independent.txt pyinstaller
+      - run: pyinstaller --clean --onefile --windowed --name pole-address-independent --collect-all pyproj independent_app.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pole-address-independent-windows
+          path: dist/pole-address-independent.exe
