@@ -262,7 +262,9 @@ def marker(d,c):
         if extract(d,c): return True
     return False
 def one(d,r,c):
-    d.get(URL);time.sleep(1.2);popups(d)
+    try: d.get(URL)
+    except Exception: pass
+    time.sleep(1.0);popups(d)
     if not region(d,r):return "권역선택실패"
     popups(d)
     if not input_code(d,c):return "입력실패"
@@ -292,7 +294,9 @@ def job(path,r,status):
             "profile.default_content_setting_values.geolocation":1,
             "profile.default_content_setting_values.notifications":1
         })
+        opts.page_load_strategy="eager"
         d=webdriver.Chrome(options=opts)
+        d.set_page_load_timeout(25)
         try:
             d.execute_cdp_cmd("Browser.grantPermissions",{
                 "origin":"https://elecmap.kr",
