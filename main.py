@@ -34,13 +34,55 @@ def click(d,label):
                 ActionChains(d).move_to_element(e).pause(.08).click().perform();time.sleep(.3);return True
         except:pass
     return False
+CLOSE_WORDS={"×","✕","X","닫기","확인","취소","닫기","close","CLOSE","OK","확인하기"}
+DONE_WORDS=("찾기 완료","검색 완료","검색이 완료","완료되었습니다","검색을 완료")
+def _click_visible_close(d):
+    # 일반 DOM의 닫기/확인 버튼을 먼저 찾는다.
+    for e in d.find_elements(By.XPATH,"//*[self::button or self::a or @role='button' or self::input]"):
+        try:
+            if not shown(e): continue
+            t=norm(e.get_attribute("aria-label") or e.get_attribute("title") or e.get_attribute("value") or e.text)
+            if t in CLOSE_WORDS or any(x in t.lower() for x in ("close","dismiss")):
+                d.execute_script("arguments[0].scrollIntoView({block:'center'});",e)
+                d.execute_script("arguments[0].click();",e);time.sleep(.25);return True
+        except: pass
+    return False
+def _click_fixed_overlay_close(d):
+    # 화면을 덮는 fixed/sticky 모달/배너의 닫기 버튼을 z-index 순으로 찾는다.
+    js="""
+    const words=['×','✕','x','닫기','확인','취소','close','dismiss','ok'];
+    const els=[...document.querySelectorAll('button,a,[role=button],input[type=button],input[type=submit]')];
+    const good=els.filter(e=>{
+      const s=getComputedStyle(e), r=e.getBoundingClientRect();
+      if(s.display==='none'||s.visibility==='hidden'||r.width<8||r.height<8)return false;
+      const z=parseInt(s.zIndex)||0;
+      if(s.position!=='fixed'&&s.position!=='sticky'&&z<10)return false;
+      const t=(e.getAttribute('aria-label')||e.getAttribute('title')||e.value||e.innerText||'').trim().toLowerCase();
+      return words.includes(t)||t.includes('close')||t.includes('dismiss')||t==='x';
+    }).sort((a,b)=>(parseInt(getComputedStyle(b).zIndex)||0)-(parseInt(getComputedStyle(a).zIndex)||0));
+    if(good.length){good[0].click();return true} return false;
+    """
+    try:return bool(d.execute_script(js))
+    except:return False
+def _done_popup(d):
+    b=body(d)
+    if any(x in b for x in DONE_WORDS):
+        # 완료 팝업 안의 확인/닫기만 누른다.
+        return _click_visible_close(d) or _click_fixed_overlay_close(d)
+    return False
 def popups(d):
-    for _ in range(8):
-        if alert(d):continue
+    # 한 번만 확인하지 않고, 배너가 연속으로 뜨는 경우까지 반복 처리한다.
+    for _ in range(15):
+        changed=False
+        if alert(d): changed=True; continue
         b=body(d)
-        if "위치를 선택해주세요" in b and click(d,"확인"):continue
-        if "선택한 권역에서 찾을 수 없어 다른 권역에서 검색했습니다" in b and (click(d,"취소") or click(d,"확인")):continue
-        break
+        if "위치를 선택해주세요" in b and click(d,"확인"): changed=True; continue
+        if "선택한 권역에서 찾을 수 없어 다른 권역에서 검색했습니다" in b and (click(d,"취소") or click(d,"확인")): changed=True; continue
+        if _done_popup(d): changed=True; continue
+        if _click_fixed_overlay_close(d): changed=True; continue
+        if _click_visible_close(d): changed=True; continue
+        if not changed: break
+    return True
 def region(d,r):
     aliases=REGION_ALIASES.get(r,[r])
     for _ in range(40):
@@ -111,7 +153,9 @@ def marker(d):
 def one(d,r,c):
     d.get(URL);time.sleep(1.2);popups(d)
     if not region(d,r):return "권역선택실패"
+    popups(d)
     if not input_code(d,c):return "입력실패"
+    popups(d)
     if not click(d,"검색"):return "검색버튼실패"
     end=time.time()+45
     while time.time()<end:
