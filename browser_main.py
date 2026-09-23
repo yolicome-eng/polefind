@@ -26,21 +26,129 @@ def body(d):
 def alert(d):
     try:a=d.switch_to.alert;s=a.text;a.accept();return s
     except:return ""
+def _scroll_to_element(d,e):
+    try:
+        d.execute_script("""
+        const el=arguments[0];
+        let p=el;
+        for(let i=0;i<8 && p;i++,p=p.parentElement){
+          try{
+            const st=getComputedStyle(p);
+            if((st.overflowY==='auto'||st.overflowY==='scroll'||st.overflow==='auto'||st.overflow==='scroll') && p.scrollHeight>p.clientHeight){
+              p.scrollTop=Math.max(0,p.scrollHeight-p.clientHeight);
+            }
+          }catch(_){}
+        }
+        el.scrollIntoView({block:'center',inline:'center'});
+        """,e)
+        time.sleep(.15)
+        return True
+    except: return False
 def click(d,label):
     for e in d.find_elements(By.XPATH,"//*[self::button or self::a or @role='button' or self::input]"):
         try:
             if shown(e) and norm(e.get_attribute("value") or e.text)==label:
-                d.execute_script("arguments[0].scrollIntoView({block:'center'});",e)
-                ActionChains(d).move_to_element(e).pause(.08).click().perform();time.sleep(.3);return True
+                _scroll_to_element(d,e)
+                try:
+                    ActionChains(d).move_to_element(e).pause(.08).click().perform()
+                except:
+                    d.execute_script("arguments[0].click();",e)
+                time.sleep(.3);return True
         except:pass
     return False
+def click_search_start(d,wait=15):
+    # 실제 영상처럼 배너가 위에 있어도 모달 내부를 아래로 자동 스크롤한 뒤
+    # 카운트다운이 끝나면 '검색 시작'을 누른다.
+    end=time.time()+wait
+    while time.time()<end:
+        if alert(d): continue
+        try:
+            els=d.find_elements(By.XPATH,"//*[self::button or self::a or @role='button' or self::input]")
+            for e in els:
+                try:
+                    if not shown(e): continue
+                    t=norm(e.get_attribute("value") or e.text)
+                    if t=="검색 시작":
+                        _scroll_to_element(d,e)
+                        # disabled/aria-disabled 상태면 카운트다운을 더 기다린다.
+                        dis=(e.get_attribute("disabled") is not None or
+                             (e.get_attribute("aria-disabled") or "").lower()=="true")
+                        if dis: continue
+                        try:
+                            ActionChains(d).move_to_element(e).pause(.1).click().perform()
+                        except:
+                            d.execute_script("arguments[0].click();",e)
+                        time.sleep(.7)
+                        return True
+                except: pass
+        except: pass
+        # 배너가 있는 모달/스크롤 영역은 계속 아래로 내려준다.
+        try:
+            d.execute_script("""
+            [...document.querySelectorAll('*')].forEach(p=>{
+              try{
+                const s=getComputedStyle(p),r=p.getBoundingClientRect();
+                if(r.width>150 && r.height>80 && p.scrollHeight>p.clientHeight &&
+                   (s.overflowY==='auto'||s.overflowY==='scroll'||s.overflow==='auto'||s.overflow==='scroll')){
+                  p.scrollTop=Math.min(p.scrollHeight-p.clientHeight,p.scrollTop+Math.max(250,p.clientHeight*0.85));
+                }
+              }catch(_){}
+            });
+            """)
+        except: pass
+        time.sleep(.35)
+    return False
+CLOSE_WORDS={"×","✕","X","닫기","확인","취소","닫기","close","CLOSE","OK","확인하기"}
+DONE_WORDS=("찾기 완료","검색 완료","검색이 완료","완료되었습니다","검색을 완료")
+def _click_visible_close(d):
+    # 일반 DOM의 닫기/확인 버튼을 먼저 찾는다.
+    for e in d.find_elements(By.XPATH,"//*[self::button or self::a or @role='button' or self::input]"):
+        try:
+            if not shown(e): continue
+            t=norm(e.get_attribute("aria-label") or e.get_attribute("title") or e.get_attribute("value") or e.text)
+            if t in CLOSE_WORDS or any(x in t.lower() for x in ("close","dismiss")):
+                d.execute_script("arguments[0].scrollIntoView({block:'center'});",e)
+                d.execute_script("arguments[0].click();",e);time.sleep(.25);return True
+        except: pass
+    return False
+def _click_fixed_overlay_close(d):
+    # 화면을 덮는 fixed/sticky 모달/배너의 닫기 버튼을 z-index 순으로 찾는다.
+    js="""
+    const words=['×','✕','x','닫기','확인','취소','close','dismiss','ok'];
+    const els=[...document.querySelectorAll('button,a,[role=button],input[type=button],input[type=submit]')];
+    const good=els.filter(e=>{
+      const s=getComputedStyle(e), r=e.getBoundingClientRect();
+      if(s.display==='none'||s.visibility==='hidden'||r.width<8||r.height<8)return false;
+      const z=parseInt(s.zIndex)||0;
+      if(s.position!=='fixed'&&s.position!=='sticky'&&z<10)return false;
+      const t=(e.getAttribute('aria-label')||e.getAttribute('title')||e.value||e.innerText||'').trim().toLowerCase();
+      return words.includes(t)||t.includes('close')||t.includes('dismiss')||t==='x';
+    }).sort((a,b)=>(parseInt(getComputedStyle(b).zIndex)||0)-(parseInt(getComputedStyle(a).zIndex)||0));
+    if(good.length){good[0].click();return true} return false;
+    """
+    try:return bool(d.execute_script(js))
+    except:return False
+def _done_popup(d):
+    b=body(d)
+    if any(x in b for x in DONE_WORDS):
+        # 완료 팝업 안의 확인/닫기만 누른다.
+        return _click_visible_close(d) or _click_fixed_overlay_close(d)
+    return False
 def popups(d):
-    for _ in range(8):
-        if alert(d):continue
+    # 광고/배너는 닫지 않는다. 영상과 동일하게 모달 안을 아래로 내리고
+    # 카운트다운 종료 후 '검색 시작'을 누르는 흐름으로 처리한다.
+    for _ in range(4):
+        if alert(d): continue
         b=body(d)
-        if "위치를 선택해주세요" in b and click(d,"확인"):continue
-        if "선택한 권역에서 찾을 수 없어 다른 권역에서 검색했습니다" in b and (click(d,"취소") or click(d,"확인")):continue
+        if ("검색 준비 중" in b or "전주 검색 준비 중" in b or "5초 후 검색이 시작됩니다"):
+            click_search_start(d,15)
+            continue
+        if "위치를 선택해주세요" in b and click(d,"확인"):
+            continue
+        if "선택한 권역에서 찾을 수 없어 다른 권역에서 검색했습니다" in b:
+            if click(d,"취소") or click(d,"확인"): continue
         break
+    return True
 def region(d,r):
     aliases=REGION_ALIASES.get(r,[r])
     for _ in range(40):
@@ -68,7 +176,16 @@ def input_code(d,c):
                 e.click();e.send_keys(Keys.CONTROL,"a");e.send_keys(c);return True
         except:pass
     return False
+def _looks_address(s):
+    s=norm(s)
+    if len(s)<6 or len(s)>120:return False
+    # 국내 지번/도로명 주소에서 흔히 등장하는 행정구역 + 번지/도로번호 패턴
+    has_area=bool(re.search(r"(특별시|광역시|특별자치시|특별자치도|[가-힣]+도|[가-힣]+시|[가-힣]+군|[가-힣]+구)",s))
+    has_place=bool(re.search(r"(읍|면|동|리|로|길|대로)",s))
+    has_num=bool(re.search(r"\\d",s))
+    return has_area and has_place and has_num
 def extract(d,c):
+    # 1) 결과 카드/마커 팝업 안에서 전산화번호 바로 아래 주소를 우선한다.
     try: els=d.find_elements(By.XPATH,"//*[contains(normalize-space(.),%r)]"%c)
     except: els=[]
     cand=[]
@@ -76,16 +193,26 @@ def extract(d,c):
         try:
             if not shown(e):continue
             p=e
-            for _ in range(7):
+            for _ in range(9):
                 ls=[norm(x) for x in p.text.splitlines() if norm(x)]
-                if c in " ".join(ls) and 2<=len(ls)<=20:cand.append(ls)
+                if c in " ".join(ls) and 2<=len(ls)<=30:cand.append(ls)
                 p=p.find_element(By.XPATH,"..")
         except:pass
+    seen=set()
     for ls in sorted(cand,key=len):
+        key="\\n".join(ls)
+        if key in seen: continue
+        seen.add(key)
         for i,x in enumerate(ls):
             if c in x:
-                for y in ls[i+1:i+6]:
-                    if y not in UI and c not in y and len(y)>=5:return y
+                for y in ls[i+1:i+10]:
+                    if y not in UI and c not in y and _looks_address(y):
+                        return y
+    # 2) 주소가 카드의 다른 줄에 있으면 카드 전체에서 주소처럼 보이는 줄을 찾는다.
+    for ls in sorted(cand,key=len):
+        for y in ls:
+            if y not in UI and c not in y and _looks_address(y):
+                return y
     return ""
 def mapclick(d):
     for _ in range(15):
@@ -94,24 +221,52 @@ def mapclick(d):
             time.sleep(1);return True
         time.sleep(.4)
     return False
-def marker(d):
+def marker(d,c):
+    # 먼저 결과 카드 자체를 클릭해 주소 팝업을 연다.
+    try:
+        els=d.find_elements(By.XPATH,"//*[contains(normalize-space(.),%r)]"%c)
+        for e in els:
+            try:
+                if not shown(e): continue
+                p=e
+                for _ in range(5):
+                    if shown(p):
+                        role=(p.get_attribute("role") or "").lower()
+                        tag=(p.tag_name or "").lower()
+                        cls=(p.get_attribute("class") or "").lower()
+                        if role=="button" or tag in ("button","a") or any(x in cls for x in ("card","result","marker","popup","info")):
+                            _scroll_to_element(d,p)
+                            try: ActionChains(d).move_to_element(p).pause(.1).click().perform()
+                            except: d.execute_script("arguments[0].click();",p)
+                            time.sleep(.8)
+                            if extract(d,c): return True
+                    p=p.find_element(By.XPATH,"..")
+            except: pass
+    except: pass
+    # 카드가 없으면 지도 마커를 클릭하고, 열린 팝업에서 주소를 읽는다.
     sels=["[class*='marker']","[class*='Marker']","[class*='cluster']","[aria-label*='전주']","[title*='전주']"]
-    for _ in range(15):
-        popups(d)
+    for _ in range(20):
         for s in sels:
             try:
                 for e in d.find_elements(By.CSS_SELECTOR,s):
                     if shown(e):
-                        ActionChains(d).move_to_element(e).pause(.1).click().perform();time.sleep(.7);return True
+                        _scroll_to_element(d,e)
+                        try: ActionChains(d).move_to_element(e).pause(.1).click().perform()
+                        except: d.execute_script("arguments[0].click();",e)
+                        time.sleep(.8)
+                        if extract(d,c): return True
             except:pass
         try:ActionChains(d).send_keys(Keys.TAB,Keys.ENTER).perform()
         except:pass
         time.sleep(.4)
+        if extract(d,c): return True
     return False
 def one(d,r,c):
     d.get(URL);time.sleep(1.2);popups(d)
     if not region(d,r):return "권역선택실패"
+    popups(d)
     if not input_code(d,c):return "입력실패"
+    popups(d)
     if not click(d,"검색"):return "검색버튼실패"
     end=time.time()+45
     while time.time()<end:
@@ -119,7 +274,7 @@ def one(d,r,c):
         a=extract(d,c)
         if a:return a
         if mapclick(d):
-            marker(d);popups(d);a=extract(d,c)
+            marker(d,c);popups(d);a=extract(d,c)
             if a:return a
         time.sleep(.6)
     return "검색결과없음"
