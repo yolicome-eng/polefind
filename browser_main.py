@@ -1,4 +1,5 @@
-import os,re,time,threading,tkinter as tk,pandas as pd
+import os,re,time,threading,tkinter as tk,traceback
+from openpyxl import load_workbook
 from tkinter import filedialog,messagebox,ttk
 from selenium import webdriver
 from selenium.webdriver.common.by import By
@@ -15,8 +16,12 @@ REGION_ALIASES={
 "3권역 전북":["3권역 전북","전북"],"3권역 전남":["3권역 전남","전남"],
 "4권역 경북":["4권역 경북","경북"],"4권역 경남":["4권역 경남","경남"],
 "남해서부":["남해서부"],"울릉도":["울릉도"],"제주":["제주"]}
+REGION_OPTIONS={
+    REGIONS[0]:"경기/충청",REGIONS[1]:"강원 서부",REGIONS[2]:"강원 동부",
+    REGIONS[3]:"전북",REGIONS[4]:"전남",REGIONS[5]:"경북",
+    REGIONS[6]:"경남",REGIONS[7]:"남해서부",REGIONS[8]:"울릉도",REGIONS[9]:"제주"}
 UI={"검색","검색 시작","지도에서 보기","확인","취소","×","검색 중...","검색 준비 중...","전산화번호","주소","도로명주소","지번주소"}
-def norm(x): return re.sub(r"\\s+"," ",str(x or "")).strip()
+def norm(x): return re.sub(r"\s+"," ",str(x or "")).strip()
 def shown(e):
     try:return e.is_displayed() and e.is_enabled()
     except:return False
@@ -74,12 +79,11 @@ def click_search_start(d,wait=15):
                         dis=(e.get_attribute("disabled") is not None or
                              (e.get_attribute("aria-disabled") or "").lower()=="true")
                         if dis: continue
-                        try:
-                            ActionChains(d).move_to_element(e).pause(.1).click().perform()
-                        except:
-                            d.execute_script("arguments[0].click();",e)
-                        time.sleep(.7)
-                        return True
+                        # 광고 iframe/고정 배너가 버튼 위에 겹칠 수 있다.
+                        d.execute_script("arguments[0].click();",e)
+                        time.sleep(.5)
+                        if not d.execute_script("return getComputedStyle(document.getElementById('adModal')).display !== 'none'"):
+                            return True
                 except: pass
         except: pass
         # 배너가 있는 모달/스크롤 영역은 계속 아래로 내려준다.
@@ -150,7 +154,7 @@ def popups(d):
         break
     return True
 def region(d,r):
-    aliases=REGION_ALIASES.get(r,[r])
+    target=REGION_OPTIONS[r]
     for _ in range(40):
         popups(d)
         selects=[s for s in d.find_elements(By.TAG_NAME,"select") if shown(s)]
@@ -159,7 +163,7 @@ def region(d,r):
                 opts=s.find_elements(By.TAG_NAME,"option")
                 for o in opts:
                     txt=norm(o.text)
-                    if any(txt==a or a in txt for a in aliases):
+                    if txt==target:
                         try:
                             Select(s).select_by_visible_text(o.text)
                         except Exception:
@@ -182,8 +186,36 @@ def _looks_address(s):
     # 국내 지번/도로명 주소에서 흔히 등장하는 행정구역 + 번지/도로번호 패턴
     has_area=bool(re.search(r"(특별시|광역시|특별자치시|특별자치도|[가-힣]+도|[가-힣]+시|[가-힣]+군|[가-힣]+구)",s))
     has_place=bool(re.search(r"(읍|면|동|리|로|길|대로)",s))
-    has_num=bool(re.search(r"\\d",s))
+    has_num=bool(re.search(r"\d",s))
     return has_area and has_place and has_num
+def result_address(d,c):
+    # 지도 팝업은 번호/권역/좌표/주소 순서. 검색창과 하단 기록은 제외한다.
+    js="""
+    const code=arguments[0];
+    const nodes=[...document.querySelectorAll('body *')].filter(e=>{
+      const r=e.getBoundingClientRect(),s=getComputedStyle(e);
+      return r.width>0&&r.height>0&&s.visibility!=='hidden'&&
+        !e.closest('#searchForm,#historySheet,#adModal,iframe')&&
+        [...e.children].every(x=>!x.innerText?.includes(code))&&e.innerText?.includes(code);
+    });
+    return nodes.map(e=>{
+      let p=e;const out=[];
+      for(let i=0;i<6&&p;i++,p=p.parentElement){
+        const t=p.innerText||'';
+        if(t.includes(code)&&t.length<900)out.push(t);
+      }
+      return out;
+    }).flat().sort((a,b)=>a.length-b.length);
+    """
+    try: blocks=d.execute_script(js,c)
+    except Exception: return ""
+    for block in blocks:
+        lines=[norm(x) for x in block.splitlines() if norm(x)]
+        if not any(c in x for x in lines): continue
+        for line in lines:
+            line=re.sub(r"^(?:주소|지번주소|도로명주소)\s*[:：]?\s*","",line)
+            if c not in line and _looks_address(line): return line
+    return ""
 def extract(d,c):
     # 1) 결과 카드/마커 팝업 안에서 전산화번호 바로 아래 주소를 우선한다.
     try: els=d.find_elements(By.XPATH,"//*[contains(normalize-space(.),%r)]"%c)
@@ -200,7 +232,7 @@ def extract(d,c):
         except:pass
     seen=set()
     for ls in sorted(cand,key=len):
-        key="\\n".join(ls)
+        key="\n".join(ls)
         if key in seen: continue
         seen.add(key)
         for i,x in enumerate(ls):
@@ -273,22 +305,18 @@ def one(d,r,c):
     end=time.time()+45
     while time.time()<end:
         popups(d)
-        a=extract(d,c)
+        a=result_address(d,c)
         if a:return a
-        if mapclick(d):
-            marker(d,c);popups(d);a=extract(d,c)
-            if a:return a
         time.sleep(.6)
-    return "검색결과없음"
+    return "주소확인실패"
 def job(path,r,status):
     d=None
     try:
-        df=pd.read_excel(path,header=None);out=df.copy()
-        if out.shape[1]<2:out[1]=""
-        else:out[out.shape[1]]=""
-        col=out.shape[1]-1
-        codes=[norm(x) for x in df.iloc[:,0] if re.fullmatch(r"[A-Za-z0-9]{8}",norm(x))]
-        if not codes:raise ValueError("첫 번째 열에 8자리 전산화번호가 없습니다.")
+        book=load_workbook(path);sheet=book.active
+        rows=[(row,norm(sheet.cell(row,1).value).upper()) for row in range(1,sheet.max_row+1)
+              if re.fullmatch(r"\d{4}[A-Z]\d{3}",norm(sheet.cell(row,1).value).upper())]
+        if not rows:raise ValueError("첫 번째 열에 8자리 전산화번호가 없습니다.")
+        base,_=os.path.splitext(path);res=base+"_주소결과.xlsx"
         opts=Options()
         opts.add_experimental_option("prefs",{
             "profile.default_content_setting_values.geolocation":1,
@@ -305,17 +333,18 @@ def job(path,r,status):
         except Exception:
             pass
         d.maximize_window()
-        total=len(codes)
-        for i,c in enumerate(codes,1):
+        total=len(rows)
+        for i,(row,c) in enumerate(rows,1):
             status.set(f"{i}/{total}  {c} 검색 중...")
             try:a=one(d,r,c)
-            except Exception as e:a="오류"
-            for k in range(len(out)):
-                if norm(out.iat[k,0])==c:out.iat[k,col]=a;break
-            if i%2==0:
-                base,_=os.path.splitext(path);out.to_excel(base+"_주소결과.xlsx",index=False,header=False)
-        base,_=os.path.splitext(path);res=base+"_주소결과.xlsx";out.to_excel(res,index=False,header=False)
-        status.set("완료");messagebox.showinfo("완료","주소 검색이 끝났습니다.\\n\\n"+res)
+            except Exception as e:a="오류: "+str(e)[:100]
+            if not _looks_address(a):
+                try:d.save_screenshot(base+f"_오류_{row}.png")
+                except Exception:pass
+            sheet.cell(row,2).value=a
+            try:book.save(res)
+            except PermissionError:raise PermissionError("결과 엑셀을 닫고 다시 실행하세요: "+res)
+        status.set("완료");messagebox.showinfo("완료","주소 검색이 끝났습니다.\n\n"+res)
     except Exception as e:status.set("오류");messagebox.showerror("오류",str(e))
     finally:
         try:d.quit()
