@@ -8,6 +8,7 @@ class App:
     def __init__(self):
         self.root=tk.Tk();self.root.title('전산화번호 주소 찾기 — 독립형');self.root.geometry('690x465')
         self.root.resizable(False,False);self.events=queue.Queue();self.origins=dict(KNOWN_ORIGINS)
+        self.found_address=''
         self.region=tk.StringVar(value='경기/충청');self.key=tk.StringVar();self.code=tk.StringVar()
         self.sample_path=tk.StringVar();self.input_path=tk.StringVar();self.result=tk.StringVar(value='전산화번호를 입력해 주세요.')
         self.status=tk.StringVar(value='ElecMap을 열지 않습니다. 인터넷 주소 조회에 카카오 REST API 키가 필요합니다.')
@@ -19,9 +20,13 @@ class App:
         ttk.Entry(frame,textvariable=self.key,show='•',width=48).grid(row=2,column=1,columnspan=2,sticky='w',pady=5)
         ttk.Label(frame,text='키는 저장하지 않으며 주소 API에만 전송됩니다.',foreground='#555').grid(row=3,column=1,columnspan=2,sticky='w')
         ttk.Label(frame,text='전산화번호').grid(row=4,column=0,sticky='w',pady=(20,5))
-        ttk.Entry(frame,textvariable=self.code,width=25,font=('맑은 고딕',12)).grid(row=4,column=1,sticky='w',pady=(20,5))
+        code_entry=ttk.Entry(frame,textvariable=self.code,width=25,font=('맑은 고딕',12))
+        code_entry.grid(row=4,column=1,sticky='w',pady=(20,5))
+        code_entry.bind('<Return>',lambda event:self.find())
         self.find_btn=ttk.Button(frame,text='주소 찾기',command=self.find);self.find_btn.grid(row=4,column=2,sticky='w',pady=(20,5))
-        ttk.Label(frame,textvariable=self.result,wraplength=625,font=('맑은 고딕',11)).grid(row=5,column=0,columnspan=3,sticky='w',pady=10)
+        ttk.Label(frame,textvariable=self.result,wraplength=510,font=('맑은 고딕',11)).grid(row=5,column=0,columnspan=2,sticky='w',pady=10)
+        self.copy_btn=ttk.Button(frame,text='주소 복사',command=self.copy_address,state='disabled')
+        self.copy_btn.grid(row=5,column=2,sticky='w',pady=10)
         ttk.Separator(frame).grid(row=6,column=0,columnspan=3,sticky='ew',pady=14)
         ttk.Label(frame,text='샘플 엑셀').grid(row=7,column=0,sticky='w')
         ttk.Entry(frame,textvariable=self.sample_path,width=49).grid(row=7,column=1,sticky='w')
@@ -41,11 +46,22 @@ class App:
             kind,value=self.events.get()
             if kind=='status':self.status.set(value)
             elif kind=='result':self.result.set(value)
+            elif kind=='found':
+                code,address,lat,lon=value
+                self.found_address=address
+                self.result.set(f'{code}  →  {address}\n좌표 {lat:.6f}, {lon:.6f} · 좌표 기반 추정 주소 (현장 확인 권장)')
+                self.copy_btn.config(state='normal')
             elif kind=='error':self.status.set('오류: '+value);messagebox.showerror('주소 조회 오류',value)
             elif kind=='done':self.status.set(value);messagebox.showinfo('완료',value)
             elif kind=='origin':self.origins[self.region.get()]=value
             elif kind=='enable':self.find_btn.config(state='normal');self.batch_btn.config(state='normal')
         self.root.after(100,self.poll)
+    def copy_address(self):
+        if not self.found_address:return
+        self.root.clipboard_clear()
+        self.root.clipboard_append(self.found_address)
+        self.root.update_idletasks()
+        self.status.set('주소만 복사했습니다. 원하는 곳에 Ctrl+V로 붙여 넣으세요.')
     def run(self,fn):
         if not self.key.get().strip():messagebox.showwarning('API 키','카카오 REST API 키를 입력해 주세요.');return
         self.find_btn.config(state='disabled');self.batch_btn.config(state='disabled')
@@ -88,10 +104,12 @@ class App:
     def find(self):
         code=self.code.get().strip().upper()
         if not CODE.fullmatch(code):messagebox.showwarning('번호','전산화번호 8자리를 확인해 주세요.');return
+        self.found_address='';self.copy_btn.config(state='disabled')
+        self.result.set('주소를 조회하는 중...')
         def job(region,key):
             origin=self.get_origin(region,key)
             address,lat,lon=self.lookup(code,region,key,origin)
-            self.events.put(('result',f'{code}  →  {address}\n좌표 {lat:.6f}, {lon:.6f} · 좌표 기반 추정 주소 (현장 확인 권장)'))
+            self.events.put(('found',(code,address,lat,lon)))
         self.run(job)
     def batch(self):
         path=self.input_path.get()
