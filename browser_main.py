@@ -7,7 +7,14 @@ from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.action_chains import ActionChains
 from selenium.webdriver.support.ui import Select
 URL="https://elecmap.kr/search/single"
-REGIONS=["서울","경기","인천","강원","충북","충남","전북","전남","경북","경남"]
+REGIONS=["1권역 (경기·충청·대전·세종)","2권역 서부 (강원 서부)","2권역 동부 (강원 동부)","3권역 전북","3권역 전남","4권역 경북","4권역 경남","남해서부","울릉도","제주"]
+REGION_ALIASES={
+"1권역 (경기·충청·대전·세종)":["1권역","경기","충청","대전","세종"],
+"2권역 서부 (강원 서부)":["2권역 서부","강원 서부"],
+"2권역 동부 (강원 동부)":["2권역 동부","강원 동부"],
+"3권역 전북":["3권역 전북","전북"],"3권역 전남":["3권역 전남","전남"],
+"4권역 경북":["4권역 경북","경북"],"4권역 경남":["4권역 경남","경남"],
+"남해서부":["남해서부"],"울릉도":["울릉도"],"제주":["제주"]}
 UI={"검색","검색 시작","지도에서 보기","확인","취소","×","검색 중...","검색 준비 중...","전산화번호","주소","도로명주소","지번주소"}
 def norm(x): return re.sub(r"\\s+"," ",str(x or "")).strip()
 def shown(e):
@@ -35,18 +42,24 @@ def popups(d):
         if "선택한 권역에서 찾을 수 없어 다른 권역에서 검색했습니다" in b and (click(d,"취소") or click(d,"확인")):continue
         break
 def region(d,r):
-    for _ in range(30):
+    aliases=REGION_ALIASES.get(r,[r])
+    for _ in range(40):
         popups(d)
-        for s in d.find_elements(By.TAG_NAME,"select"):
+        selects=[s for s in d.find_elements(By.TAG_NAME,"select") if shown(s)]
+        for s in selects:
             try:
-                if not shown(s):continue
-                for o in s.find_elements(By.TAG_NAME,"option"):
-                    if norm(o.text)==r or norm(o.text).startswith(r+" "):
-                        try:Select(s).select_by_visible_text(o.text)
-                        except:d.execute_script("arguments[0].value=arguments[1];arguments[0].dispatchEvent(new Event('change',{bubbles:true}));",s,o.get_attribute("value"))
-                        time.sleep(.7);return True
-            except:pass
-        time.sleep(.25)
+                opts=s.find_elements(By.TAG_NAME,"option")
+                for o in opts:
+                    txt=norm(o.text)
+                    if any(txt==a or a in txt for a in aliases):
+                        try:
+                            Select(s).select_by_visible_text(o.text)
+                        except Exception:
+                            d.execute_script("arguments[0].value=arguments[1];arguments[0].dispatchEvent(new Event('input',{bubbles:true}));arguments[0].dispatchEvent(new Event('change',{bubbles:true}));",s,o.get_attribute("value"))
+                        time.sleep(1.0)
+                        return True
+            except Exception: pass
+        time.sleep(.3)
     return False
 def input_code(d,c):
     for e in d.find_elements(By.CSS_SELECTOR,"input"):
@@ -138,7 +151,7 @@ def job(path,r,status):
         except:pass
 def main():
     root=tk.Tk();root.title("전산화번호 → 주소 자동검색");root.geometry("470x230");root.resizable(False,False)
-    p=tk.StringVar();r=tk.StringVar(value="경기");s=tk.StringVar(value="엑셀 파일을 선택하세요.")
+    p=tk.StringVar();r=tk.StringVar(value="1권역 (경기·충청·대전·세종)");s=tk.StringVar(value="엑셀 파일을 선택하세요.")
     tk.Label(root,text="엑셀 파일").pack(pady=(18,4));fr=tk.Frame(root);fr.pack(fill="x",padx=20)
     tk.Entry(fr,textvariable=p).pack(side="left",fill="x",expand=True)
     def pick():
