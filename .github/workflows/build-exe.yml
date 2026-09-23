@@ -19,11 +19,13 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
+          pip install selenium
+          python -c "import selenium; print('selenium', selenium.__version__)"
           pip install pyinstaller
 
       - name: Build main EXE
         run: |
-          pyinstaller --onefile --windowed --name polefind --collect-all selenium --hidden-import=selenium.webdriver.chrome.webdriver --hidden-import=selenium.webdriver.chrome.service --hidden-import=selenium.webdriver.common.driver_finder main.py
+          pyinstaller --clean --onefile --windowed --name polefind --collect-submodules selenium --collect-data selenium --collect-binaries selenium --hidden-import=selenium.webdriver.chrome.webdriver --hidden-import=selenium.webdriver.chrome.service --hidden-import=selenium.webdriver.common.driver_finder --hidden-import=selenium.webdriver.common.selenium_manager main.py
           pyinstaller --onefile --windowed --name polefind-diagnose --collect-all selenium --hidden-import=selenium.webdriver.chrome.webdriver --hidden-import=selenium.webdriver.chrome.service --hidden-import=selenium.webdriver.common.driver_finder diagnose.py
 
       - name: Upload EXE
