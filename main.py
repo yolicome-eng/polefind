@@ -71,11 +71,17 @@ def _done_popup(d):
         return _click_visible_close(d) or _click_fixed_overlay_close(d)
     return False
 def popups(d):
-    # 한 번만 확인하지 않고, 배너가 연속으로 뜨는 경우까지 반복 처리한다.
-    for _ in range(15):
+    # 영상에서 확인된 실제 ElecMap 흐름:
+    # 검색 클릭 -> '전주 검색 준비 중...' 모달 -> 광고가 들어간 카운트다운 ->
+    # 카운트다운 종료 후 '검색 시작' 버튼 -> 결과 카드.
+    # 따라서 이 버튼은 팝업으로 취급해 닫지 않고 먼저 눌러준다.
+    for _ in range(20):
         changed=False
         if alert(d): changed=True; continue
         b=body(d)
+        if ("검색 준비 중" in b or "전주 검색 준비 중" in b or "5초 후 검색이 시작됩니다" in b):
+            if click(d,"검색 시작"):
+                time.sleep(.5); changed=True; continue
         if "위치를 선택해주세요" in b and click(d,"확인"): changed=True; continue
         if "선택한 권역에서 찾을 수 없어 다른 권역에서 검색했습니다" in b and (click(d,"취소") or click(d,"확인")): changed=True; continue
         if _done_popup(d): changed=True; continue
