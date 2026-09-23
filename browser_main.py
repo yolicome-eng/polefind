@@ -62,45 +62,26 @@ def click(d,label):
         except:pass
     return False
 def click_search_start(d,wait=15):
-    # 실제 영상처럼 배너가 위에 있어도 모달 내부를 아래로 자동 스크롤한 뒤
-    # 카운트다운이 끝나면 '검색 시작'을 누른다.
-    end=time.time()+wait
-    while time.time()<end:
-        if alert(d): continue
+    # 광고 iframe이 화면을 덮으면 마우스 클릭이 iframe에 가로채인다.
+    # 사이트가 자체 카운트다운 뒤 표시하는 버튼에 키보드 Enter를 보낸다.
+    end=time.monotonic()+wait
+    while time.monotonic()<end:
         try:
-            els=d.find_elements(By.XPATH,"//*[self::button or self::a or @role='button' or self::input]")
-            for e in els:
-                try:
-                    if not shown(e): continue
-                    t=norm(e.get_attribute("value") or e.text)
-                    if t=="검색 시작":
-                        _scroll_to_element(d,e)
-                        # disabled/aria-disabled 상태면 카운트다운을 더 기다린다.
-                        dis=(e.get_attribute("disabled") is not None or
-                             (e.get_attribute("aria-disabled") or "").lower()=="true")
-                        if dis: continue
-                        # 광고 iframe/고정 배너가 버튼 위에 겹칠 수 있다.
-                        d.execute_script("arguments[0].click();",e)
-                        time.sleep(.5)
-                        if not d.execute_script("return getComputedStyle(document.getElementById('adModal')).display !== 'none'"):
-                            return True
-                except: pass
-        except: pass
-        # 배너가 있는 모달/스크롤 영역은 계속 아래로 내려준다.
-        try:
-            d.execute_script("""
-            [...document.querySelectorAll('*')].forEach(p=>{
-              try{
-                const s=getComputedStyle(p),r=p.getBoundingClientRect();
-                if(r.width>150 && r.height>80 && p.scrollHeight>p.clientHeight &&
-                   (s.overflowY==='auto'||s.overflowY==='scroll'||s.overflow==='auto'||s.overflow==='scroll')){
-                  p.scrollTop=Math.min(p.scrollHeight-p.clientHeight,p.scrollTop+Math.max(250,p.clientHeight*0.85));
-                }
-              }catch(_){}
-            });
+            state=d.execute_script("""
+              const m=document.getElementById('adModal'),b=document.getElementById('adSkipBtn');
+              return {open:!!m&&getComputedStyle(m).display!=='none',
+                      ready:!!b&&getComputedStyle(b).display!=='none'};
             """)
-        except: pass
-        time.sleep(.35)
+            if not state['open']:return True
+            if state['ready']:
+                e=d.find_element(By.ID,'adSkipBtn')
+                try:e.send_keys(Keys.ENTER)
+                except Exception:d.execute_script('arguments[0].click()',e)
+                time.sleep(.4)
+                if not d.execute_script("return getComputedStyle(document.getElementById('adModal')).display!=='none'"):
+                    return True
+        except Exception:pass
+        time.sleep(.4)
     return False
 CLOSE_WORDS={"×","✕","X","닫기","확인","취소","닫기","close","CLOSE","OK","확인하기"}
 DONE_WORDS=("찾기 완료","검색 완료","검색이 완료","완료되었습니다","검색을 완료")
@@ -189,32 +170,17 @@ def _looks_address(s):
     has_num=bool(re.search(r"\d",s))
     return has_area and has_place and has_num
 def result_address(d,c):
-    # 지도 팝업은 번호/권역/좌표/주소 순서. 검색창과 하단 기록은 제외한다.
-    js="""
-    const code=arguments[0];
-    const nodes=[...document.querySelectorAll('body *')].filter(e=>{
-      const r=e.getBoundingClientRect(),s=getComputedStyle(e);
-      return r.width>0&&r.height>0&&s.visibility!=='hidden'&&
-        !e.closest('#searchForm,#historySheet,#adModal,iframe')&&
-        [...e.children].every(x=>!x.innerText?.includes(code))&&e.innerText?.includes(code);
-    });
-    return nodes.map(e=>{
-      let p=e;const out=[];
-      for(let i=0;i<6&&p;i++,p=p.parentElement){
-        const t=p.innerText||'';
-        if(t.includes(code)&&t.length<900)out.push(t);
-      }
-      return out;
-    }).flat().sort((a,b)=>a.length-b.length);
-    """
-    try: blocks=d.execute_script(js,c)
-    except Exception: return ""
-    for block in blocks:
-        lines=[norm(x) for x in block.splitlines() if norm(x)]
-        if not any(c in x for x in lines): continue
-        for line in lines:
-            line=re.sub(r"^(?:주소|지번주소|도로명주소)\s*[:：]?\s*","",line)
-            if c not in line and _looks_address(line): return line
+    # 영상과 실제 사이트에서 확인한 결과 카드: 번호와 상세 주소를 한 카드에서 읽는다.
+    try:
+        data=d.execute_script("""
+        const p=document.getElementById('resultContent');
+        if(!p || getComputedStyle(p).display==='none')return null;
+        return {code:p.querySelector('.result-code')?.innerText || '',
+                address:p.querySelector('#addrResult')?.innerText || ''};
+        """)
+        if data and norm(data['code']).upper()==c and _looks_address(data['address']):
+            return norm(data['address'])
+    except Exception:pass
     return ""
 def extract(d,c):
     # 1) 결과 카드/마커 팝업 안에서 전산화번호 바로 아래 주소를 우선한다.
@@ -293,21 +259,35 @@ def marker(d,c):
         time.sleep(.4)
         if extract(d,c): return True
     return False
-def one(d,r,c):
+def one(d,r,c,progress=lambda message:None):
+    progress('페이지 열기')
     try: d.get(URL)
     except Exception: pass
-    time.sleep(1.0);popups(d)
+    time.sleep(1.0)
+    progress('권역 선택')
     if not region(d,r):return "권역선택실패"
-    popups(d)
+    progress('번호 입력')
     if not input_code(d,c):return "입력실패"
-    popups(d)
+    progress('검색 버튼')
     if not click(d,"검색"):return "검색버튼실패"
-    end=time.time()+45
-    while time.time()<end:
-        popups(d)
+    progress('광고 대기창 / 결과 기다리는 중')
+    end=time.monotonic()+50
+    while time.monotonic()<end:
+        if d.execute_script("return !!document.getElementById('adModal') && getComputedStyle(document.getElementById('adModal')).display!=='none'"):
+            if not click_search_start(d,18):return '검색시작버튼실패'
+            progress('검색 결과 기다리는 중')
+        alert(d)
         a=result_address(d,c)
         if a:return a
-        time.sleep(.6)
+        try:
+            error=d.execute_script("""
+              const e=document.getElementById('errorModal');
+              return e&&getComputedStyle(e).display!=='none' ? e.innerText : '';
+            """)
+            if error and norm(error) not in ('⚠️ 확인','확인'):
+                return '사이트오류: '+norm(error)[:90]
+        except Exception:pass
+        time.sleep(.5)
     return "주소확인실패"
 def job(path,r,status):
     d=None
@@ -335,9 +315,14 @@ def job(path,r,status):
         d.maximize_window()
         total=len(rows)
         for i,(row,c) in enumerate(rows,1):
-            status.set(f"{i}/{total}  {c} 검색 중...")
-            try:a=one(d,r,c)
+            def progress(stage):
+                message=f"{i}/{total} {c} — {stage}"
+                status.set(message)
+                with open(base+'_진행기록.txt','a',encoding='utf-8') as log:
+                    log.write(time.strftime('%Y-%m-%d %H:%M:%S')+' '+message+'\n')
+            try:a=one(d,r,c,progress)
             except Exception as e:a="오류: "+str(e)[:100]
+            progress('결과: '+a)
             if not _looks_address(a):
                 try:d.save_screenshot(base+f"_오류_{row}.png")
                 except Exception:pass
