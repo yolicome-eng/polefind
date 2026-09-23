@@ -1,231 +1,166 @@
-import os
-import re
-import json
-import threading
-import traceback
-import tkinter as tk
-from tkinter import filedialog, messagebox, ttk
-
-import pandas as pd
-import requests
-
-API_URL = "https://elecmap.kr/api/search"
-CODE_RE = re.compile(r"^\d{4}[A-Za-z]\d{3}$")
-
-SESSION = requests.Session()
-SESSION.headers.update({
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/153 Safari/537.36",
-    "Accept": "application/json, text/plain, */*",
-    "Content-Type": "application/json",
-    "Origin": "https://elecmap.kr",
-    "Referer": "https://elecmap.kr/search/single",
-})
-
-REGIONS = [f"region{i}" for i in range(1, 11)]
-
-
-def flatten_values(obj, out=None):
-    if out is None:
-        out = []
-    if isinstance(obj, dict):
-        for k, v in obj.items():
-            if isinstance(v, (dict, list)):
-                flatten_values(v, out)
-            elif v is not None:
-                out.append((str(k).lower(), str(v).strip()))
-    elif isinstance(obj, list):
-        for v in obj:
-            flatten_values(v, out)
-    return out
-
-
-def find_address(data):
-    pairs = flatten_values(data)
-    preferred = (
-        "roadaddress", "road_address", "roadaddr", "road_addr",
-        "jibunaddress", "jibun_address", "address", "addr",
-        "location", "fulladdress", "full_address"
-    )
-
-    # 주소로 보이는 키를 먼저 사용
-    for key, value in pairs:
-        key2 = key.replace("-", "_").replace(" ", "")
-        if any(p.replace("_", "") in key2 for p in preferred):
-            if len(value) >= 5 and not re.fullmatch(r"https?://.*", value):
-                return value
-
-    # 값 자체가 한국 주소처럼 보이는 경우
-    for _, value in pairs:
-        if re.search(r"(특별시|광역시|특별자치도|도)\s+.*(시|군|구)\s+.*(대로|로|길)\s*\d+", value):
-            return value
-        if re.search(r"(시|군|구)\s+.*(읍|면|동|리)\s+\d+", value):
-            return value
-
-    return ""
-
-
-def find_coordinates(data):
-    lat = lon = None
-    pairs = flatten_values(data)
-    for key, value in pairs:
-        k = key.replace("_", "").replace("-", "")
+import os,re,time,threading,tkinter as tk,pandas as pd
+from tkinter import filedialog,messagebox,ttk
+from selenium import webdriver
+from selenium.webdriver.common.by import By
+from selenium.webdriver.common.keys import Keys
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.common.action_chains import ActionChains
+from selenium.webdriver.support.ui import Select
+URL="https://elecmap.kr/search/single"
+REGIONS=["1권역 (경기·충청·대전·세종)","2권역 서부 (강원 서부)","2권역 동부 (강원 동부)","3권역 전북","3권역 전남","4권역 경북","4권역 경남","남해서부","울릉도","제주"]
+REGION_ALIASES={
+"1권역 (경기·충청·대전·세종)":["1권역","경기","충청","대전","세종"],
+"2권역 서부 (강원 서부)":["2권역 서부","강원 서부"],
+"2권역 동부 (강원 동부)":["2권역 동부","강원 동부"],
+"3권역 전북":["3권역 전북","전북"],"3권역 전남":["3권역 전남","전남"],
+"4권역 경북":["4권역 경북","경북"],"4권역 경남":["4권역 경남","경남"],
+"남해서부":["남해서부"],"울릉도":["울릉도"],"제주":["제주"]}
+UI={"검색","검색 시작","지도에서 보기","확인","취소","×","검색 중...","검색 준비 중...","전산화번호","주소","도로명주소","지번주소"}
+def norm(x): return re.sub(r"\\s+"," ",str(x or "")).strip()
+def shown(e):
+    try:return e.is_displayed() and e.is_enabled()
+    except:return False
+def body(d):
+    try:return norm(d.find_element(By.TAG_NAME,"body").text)
+    except:return ""
+def alert(d):
+    try:a=d.switch_to.alert;s=a.text;a.accept();return s
+    except:return ""
+def click(d,label):
+    for e in d.find_elements(By.XPATH,"//*[self::button or self::a or @role='button' or self::input]"):
         try:
-            n = float(value)
-        except Exception:
-            continue
-        if k in ("lat", "latitude") and -90 <= n <= 90:
-            lat = n
-        elif k in ("lon", "lng", "longitude") and -180 <= n <= 180:
-            lon = n
-    return lat, lon
-
-
-def api_search(code):
-    # ElecMap 공식 페이지는 권역을 모르면 전국 권역을 자동 검색합니다.
-    # 우선 region 없이 요청하고, 실패하면 알려진 10개 권역을 순차적으로 확인합니다.
-    payloads = [{"code": code}]
-    payloads.extend({"code": code, "region": r} for r in REGIONS)
-
-    last_error = None
-
-    for payload in payloads:
+            if shown(e) and norm(e.get_attribute("value") or e.text)==label:
+                d.execute_script("arguments[0].scrollIntoView({block:'center'});",e)
+                ActionChains(d).move_to_element(e).pause(.08).click().perform();time.sleep(.3);return True
+        except:pass
+    return False
+def popups(d):
+    for _ in range(8):
+        if alert(d):continue
+        b=body(d)
+        if "위치를 선택해주세요" in b and click(d,"확인"):continue
+        if "선택한 권역에서 찾을 수 없어 다른 권역에서 검색했습니다" in b and (click(d,"취소") or click(d,"확인")):continue
+        break
+def region(d,r):
+    aliases=REGION_ALIASES.get(r,[r])
+    for _ in range(40):
+        popups(d)
+        selects=[s for s in d.find_elements(By.TAG_NAME,"select") if shown(s)]
+        for s in selects:
+            try:
+                opts=s.find_elements(By.TAG_NAME,"option")
+                for o in opts:
+                    txt=norm(o.text)
+                    if any(txt==a or a in txt for a in aliases):
+                        try:
+                            Select(s).select_by_visible_text(o.text)
+                        except Exception:
+                            d.execute_script("arguments[0].value=arguments[1];arguments[0].dispatchEvent(new Event('input',{bubbles:true}));arguments[0].dispatchEvent(new Event('change',{bubbles:true}));",s,o.get_attribute("value"))
+                        time.sleep(1.0)
+                        return True
+            except Exception: pass
+        time.sleep(.3)
+    return False
+def input_code(d,c):
+    for e in d.find_elements(By.CSS_SELECTOR,"input"):
         try:
-            r = SESSION.post(API_URL, json=payload, timeout=15)
-            r.raise_for_status()
-            data = r.json()
-
-            address = find_address(data)
-            lat, lon = find_coordinates(data)
-
-            # API가 주소를 직접 주는 경우
-            if address:
-                return address
-
-            # 주소가 없더라도 좌표가 있으면 문자열로 보존해 실패로 버리지 않음
-            if lat is not None and lon is not None:
-                return f"좌표 {lat:.6f}, {lon:.6f}"
-
-            # 성공/결과 구조인데 주소명이 다른 경우 원문에서 흔한 필드를 추가 탐색
-            if isinstance(data, dict):
-                for key in ("result", "data", "item", "pole"):
-                    value = data.get(key)
-                    if isinstance(value, dict):
-                        address = find_address(value)
-                        if address:
-                            return address
-
-        except Exception as e:
-            last_error = e
-            continue
-
-    if last_error:
-        return ""
+            if shown(e) and "전산화번호" in (e.get_attribute("placeholder") or ""):
+                e.click();e.send_keys(Keys.CONTROL,"a");e.send_keys(c);return True
+        except:pass
+    return False
+def extract(d,c):
+    try: els=d.find_elements(By.XPATH,"//*[contains(normalize-space(.),%r)]"%c)
+    except: els=[]
+    cand=[]
+    for e in els:
+        try:
+            if not shown(e):continue
+            p=e
+            for _ in range(7):
+                ls=[norm(x) for x in p.text.splitlines() if norm(x)]
+                if c in " ".join(ls) and 2<=len(ls)<=20:cand.append(ls)
+                p=p.find_element(By.XPATH,"..")
+        except:pass
+    for ls in sorted(cand,key=len):
+        for i,x in enumerate(ls):
+            if c in x:
+                for y in ls[i+1:i+6]:
+                    if y not in UI and c not in y and len(y)>=5:return y
     return ""
-
-
-def run(path, status, bar, root):
+def mapclick(d):
+    for _ in range(15):
+        popups(d)
+        if click(d,"지도에서 보기"):
+            time.sleep(1);return True
+        time.sleep(.4)
+    return False
+def marker(d):
+    sels=["[class*='marker']","[class*='Marker']","[class*='cluster']","[aria-label*='전주']","[title*='전주']"]
+    for _ in range(15):
+        popups(d)
+        for s in sels:
+            try:
+                for e in d.find_elements(By.CSS_SELECTOR,s):
+                    if shown(e):
+                        ActionChains(d).move_to_element(e).pause(.1).click().perform();time.sleep(.7);return True
+            except:pass
+        try:ActionChains(d).send_keys(Keys.TAB,Keys.ENTER).perform()
+        except:pass
+        time.sleep(.4)
+    return False
+def one(d,r,c):
+    d.get(URL);time.sleep(1.2);popups(d)
+    if not region(d,r):return "권역선택실패"
+    if not input_code(d,c):return "입력실패"
+    if not click(d,"검색"):return "검색버튼실패"
+    end=time.time()+45
+    while time.time()<end:
+        popups(d)
+        a=extract(d,c)
+        if a:return a
+        if mapclick(d):
+            marker(d);popups(d);a=extract(d,c)
+            if a:return a
+        time.sleep(.6)
+    return "검색결과없음"
+def job(path,r,status):
+    d=None
     try:
-        df = pd.read_excel(path, header=None)
-        if df.shape[1] < 2:
-            df[1] = ""
-
-        total = len(df)
-        if total == 0:
-            raise ValueError("엑셀 파일에 데이터가 없습니다.")
-
-        for i, v in enumerate(df.iloc[:, 0].fillna("").astype(str)):
-            code = v.strip().replace(" ", "").upper()
-            status.set(f"{i + 1}/{total}  {code}")
-
-            if not CODE_RE.fullmatch(code):
-                df.iat[i, 1] = "형식오류"
-            else:
-                try:
-                    result = api_search(code)
-                    df.iat[i, 1] = result or "검색결과없음"
-                except Exception as e:
-                    df.iat[i, 1] = "검색오류: " + type(e).__name__
-
-            bar["value"] = (i + 1) * 100 / max(total, 1)
-            root.after(0, root.update_idletasks)
-
-        out = os.path.splitext(path)[0] + "_주소결과.xlsx"
-        df.to_excel(out, index=False, header=False)
-
-        status.set("완료")
-        root.after(
-            0,
-            lambda: messagebox.showinfo(
-                "완료",
-                f"완료되었습니다.\n\n결과 파일:\n{out}"
-            )
-        )
-
-    except Exception as e:
-        detail = f"{type(e).__name__}: {e}"
-        print(traceback.format_exc())
-        status.set("오류 발생")
-        root.after(
-            0,
-            lambda d=detail: messagebox.showerror(
-                "오류 원인",
-                "프로그램 실행 중 오류가 발생했습니다.\n\n" + d
-            )
-        )
-
-
+        df=pd.read_excel(path,header=None);out=df.copy()
+        if out.shape[1]<2:out[1]=""
+        else:out[out.shape[1]]=""
+        col=out.shape[1]-1
+        codes=[norm(x) for x in df.iloc[:,0] if re.fullmatch(r"[A-Za-z0-9]{8}",norm(x))]
+        if not codes:raise ValueError("첫 번째 열에 8자리 전산화번호가 없습니다.")
+        d=webdriver.Chrome(options=(lambda o:o)(Options()))
+        d.maximize_window()
+        total=len(codes)
+        for i,c in enumerate(codes,1):
+            status.set(f"{i}/{total}  {c} 검색 중...")
+            try:a=one(d,r,c)
+            except Exception as e:a="오류"
+            for k in range(len(out)):
+                if norm(out.iat[k,0])==c:out.iat[k,col]=a;break
+            if i%2==0:
+                base,_=os.path.splitext(path);out.to_excel(base+"_주소결과.xlsx",index=False,header=False)
+        base,_=os.path.splitext(path);res=base+"_주소결과.xlsx";out.to_excel(res,index=False,header=False)
+        status.set("완료");messagebox.showinfo("완료","주소 검색이 끝났습니다.\\n\\n"+res)
+    except Exception as e:status.set("오류");messagebox.showerror("오류",str(e))
+    finally:
+        try:d.quit()
+        except:pass
 def main():
-    root = tk.Tk()
-    root.title("전산화번호 → 주소 찾기")
-    root.geometry("700x300")
-    root.resizable(False, False)
-
-    path = tk.StringVar()
-    status = tk.StringVar(value="엑셀 파일을 선택하세요.")
-
-    ttk.Label(
-        root, text="전산화번호 주소 찾기",
-        font=("맑은 고딕", 18, "bold")
-    ).pack(pady=(18, 10))
-
-    row = ttk.Frame(root)
-    row.pack(fill="x", padx=25)
-
-    ttk.Entry(row, textvariable=path).pack(side="left", fill="x", expand=True)
-
-    ttk.Button(
-        row, text="엑셀 선택",
-        command=lambda: path.set(
-            filedialog.askopenfilename(
-                filetypes=[("Excel 파일", "*.xlsx")]
-            )
-        ),
-    ).pack(side="left", padx=(8, 0))
-
-    bar = ttk.Progressbar(root, length=630, mode="determinate")
-    bar.pack(pady=20)
-
-    ttk.Label(
-        root, textvariable=status,
-        font=("맑은 고딕", 10)
-    ).pack()
-
+    root=tk.Tk();root.title("전산화번호 → 주소 자동검색");root.geometry("470x230");root.resizable(False,False)
+    p=tk.StringVar();r=tk.StringVar(value="1권역 (경기·충청·대전·세종)");s=tk.StringVar(value="엑셀 파일을 선택하세요.")
+    tk.Label(root,text="엑셀 파일").pack(pady=(18,4));fr=tk.Frame(root);fr.pack(fill="x",padx=20)
+    tk.Entry(fr,textvariable=p).pack(side="left",fill="x",expand=True)
+    def pick():
+        x=filedialog.askopenfilename(filetypes=[("Excel","*.xlsx")])
+        if x:p.set(x)
+    tk.Button(fr,text="찾기",command=pick,width=8).pack(side="left",padx=6)
+    tk.Label(root,text="검색 권역").pack(pady=(14,4));ttk.Combobox(root,textvariable=r,values=REGIONS,state="readonly",width=18).pack()
     def start():
-        if not path.get() or not os.path.isfile(path.get()):
-            messagebox.showwarning("확인", "엑셀 파일을 먼저 선택하세요.")
-            return
-
-        bar["value"] = 0
-        status.set("검색 준비 중...")
-        threading.Thread(
-            target=run,
-            args=(path.get(), status, bar, root),
-            daemon=True,
-        ).start()
-
-    ttk.Button(root, text="검색 시작", command=start).pack(pady=15)
-    root.mainloop()
-
-
-if __name__ == "__main__":
-    main()
+        if not p.get() or not os.path.exists(p.get()):messagebox.showwarning("확인","엑셀 파일을 선택하세요.");return
+        threading.Thread(target=job,args=(p.get(),r.get(),s),daemon=True).start()
+    tk.Button(root,text="검색 시작",command=start,width=20,height=2).pack(pady=12);tk.Label(root,textvariable=s).pack();root.mainloop()
+if __name__=="__main__":main()
