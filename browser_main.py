@@ -294,9 +294,9 @@ def job(path,r,status):
             "profile.default_content_setting_values.geolocation":1,
             "profile.default_content_setting_values.notifications":1
         })
-        opts.page_load_strategy="eager"
+        opts.page_load_strategy="none"
         d=webdriver.Chrome(options=opts)
-        d.set_page_load_timeout(25)
+        d.set_page_load_timeout(8)
         try:
             d.execute_cdp_cmd("Browser.grantPermissions",{
                 "origin":"https://elecmap.kr",
